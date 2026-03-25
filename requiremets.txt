@@ -1,0 +1,9 @@
+flask
+flask-cors
+mysql-connector-python
+werkzeug
+requests
+python-dotenv
+google-api-python-client
+google-auth
+google-auth-httplib2
