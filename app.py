@@ -2,10 +2,21 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import uuid
+from dotenv import load_dotenv
 from database import get_db_connection  # Folosim funcția ta de conexiune
+from models import create_recognition_history_table
+from routes.recognize import recognize_bp
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
+
+# Register blueprints
+app.register_blueprint(recognize_bp)
+
+# Create tables at startup
+create_recognition_history_table()
 
 # 🔹 Signup
 @app.route('/signup', methods=['POST'])
@@ -72,4 +83,5 @@ def signin():
         return jsonify({'error': str(err)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
+
