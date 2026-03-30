@@ -2,8 +2,12 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import uuid
+from dotenv import load_dotenv
 from database import get_db_connection  # Folosim funcția ta de conexiune
+from models import create_recognition_history_table
+from routes.recognize import recognize_bp
 
+load_dotenv()
 import os
 import datetime
 import jwt
@@ -12,12 +16,15 @@ import smtplib
 from email.mime.text import MIMEText
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
-from dotenv import load_dotenv
-
-load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
+
+# Register blueprints
+app.register_blueprint(recognize_bp)
+
+# Create tables at startup
+create_recognition_history_table()
 
 # 🔹 Signup
 @app.route('/signup', methods=['POST'])
@@ -301,5 +308,5 @@ def reset_password():
     return jsonify({"success": True, "message": "Parola a fost schimbată cu succes"}), 200
 
 if __name__ == '__main__':
-    # Ascultăm pe '0.0.0.0' pentru a fi accesibili din rețeaua locală (telefon curent 192.168.0.192)
+    # Ascultăm pe '0.0.0.0' pentru a fi accesibili din rețeaua locală
     app.run(host='0.0.0.0', port=5000, debug=True)
