@@ -4,7 +4,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import uuid
 from dotenv import load_dotenv
 from database import get_db_connection  # Folosim funcția ta de conexiune
-from models import create_recognition_history_table
+from models import create_recognition_history_table, create_password_resets_table
 from routes.recognize import recognize_bp
 
 load_dotenv()
@@ -23,8 +23,15 @@ CORS(app)
 # Register blueprints
 app.register_blueprint(recognize_bp)
 
+# --- DEBUGGING: Interceptăm ORICE cerere care ajunge la server ---
+@app.before_request
+def log_request_info():
+    print(f"📡 [TRAFIC INTERCEPTAT] Metodă: {request.method} | Către: {request.url} | IP Sursă: {request.remote_addr}", flush=True)
+# -----------------------------------------------------------------
+
 # Create tables at startup
 create_recognition_history_table()
+create_password_resets_table()
 
 # 🔹 Signup
 @app.route('/signup', methods=['POST'])
@@ -60,7 +67,28 @@ def signup():
         conn.commit()
         cursor.close()
         conn.close()
-        return jsonify({'message': 'User creat cu succes', 'user_id': user_id})
+        
+        # 🔹 Generăm JWT pentru autologin
+        jwt_secret = os.getenv('JWT_SECRET_KEY')
+        payload = {
+            'user_id': user_id,
+            'email': email,
+            'exp': datetime.datetime.utcnow() + datetime.timedelta(days=7)
+        }
+        session_token = jwt.encode(payload, jwt_secret, algorithm='HS256')
+
+        return jsonify({
+            'message': 'User creat cu succes', 
+            'user_id': user_id, 
+            'token': session_token,
+            'user': {
+                'id': user_id,
+                'email': email,
+                'first_name': first_name,
+                'last_name': last_name,
+                'profile_picture': ''
+            }
+        })
 
     except Exception as err:
         return jsonify({'error': str(err)}), 500
@@ -84,7 +112,27 @@ def signin():
         conn.close()
 
         if user and check_password_hash(user['password'], password):
-            return jsonify({'message': 'Autentificare reușită', 'user_id': user['id']})
+            # 🔹 Generăm JWT
+            jwt_secret = os.getenv('JWT_SECRET_KEY')
+            payload = {
+                'user_id': user['id'],
+                'email': user['email'],
+                'exp': datetime.datetime.utcnow() + datetime.timedelta(days=7)
+            }
+            session_token = jwt.encode(payload, jwt_secret, algorithm='HS256')
+            
+            return jsonify({
+                'message': 'Autentificare reușită', 
+                'user_id': user['id'],
+                'token': session_token,
+                'user': {
+                    'id': user['id'],
+                    'email': user['email'],
+                    'first_name': user['first_name'],
+                    'last_name': user['last_name'],
+                    'profile_picture': user.get('profile_picture', '')
+                }
+            })
         else:
             return jsonify({'error': 'Email sau parola incorecte'}), 401
     except Exception as err:
@@ -176,9 +224,12 @@ def google_signin():
         }), 200
 
     except ValueError as e:
-        print(f"❌ [BACKEND] Eroare validare token Google: {e}", flush=True)
-        return jsonify({'error': 'Token de la Google invalid'}), 401
+        print(f"❌ [BACKEND] Eroare validare token Google (ValueError): {e}", flush=True)
+        return jsonify({'error': f'Token de la Google invalid: {e}'}), 401
     except Exception as err:
+        import traceback
+        print(f"❌ [BACKEND] EROARE GRAVĂ INTERNĂ la Google Login: {err}", flush=True)
+        traceback.print_exc()  # Asta va printa exact linia de cod unde a crăpat
         return jsonify({'error': f'Eroare internă de server: {str(err)}'}), 500
 
 # ---------------------------------------------------------
@@ -215,58 +266,70 @@ def send_otp_email(to_email, otp):
 def forgot_password():
     data = request.json
     email = data.get('email')
-    
+
     if not email:
         return jsonify({"success": False, "error": "Email is required"}), 400
-        
+
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
+
+    # Verificăm dacă email-ul există în baza de date
     cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
     user = cursor.fetchone()
-    
+
     if not user:
         cursor.close()
         conn.close()
-        return jsonify({"success": False, "error": "Email nu există"}), 404
-        
-    # Generează PIN de 6 cifre și calculăm expirarea
+        return jsonify({"success": False, "error": "Email not found"}), 404
+
+    # Generează cod OTP de 6 cifre
     otp = str(random.randint(100000, 999999))
-    expiry = datetime.datetime.now() + datetime.timedelta(minutes=15)
-    
-    cursor.execute("UPDATE users SET otp_code = %s, otp_expiry = %s WHERE email = %s", (otp, expiry, email))
+    expires_at = datetime.datetime.now() + datetime.timedelta(minutes=15)
+
+    # Ștergem orice OTP vechi pentru acest email și inserăm unul nou
+    cursor.execute("DELETE FROM password_resets WHERE email = %s", (email,))
+    cursor.execute(
+        "INSERT INTO password_resets (email, otp, expires_at) VALUES (%s, %s, %s)",
+        (email, otp, expires_at)
+    )
     conn.commit()
     cursor.close()
     conn.close()
-    
+
     # Trimitem emailul
     if send_otp_email(email, otp):
         return jsonify({"success": True, "message": "OTP trimis"}), 200
     else:
-        return jsonify({"success": False, "error": "Eroare la trimiterea email-ului. Verifică setările SMTP."}), 500
+        return jsonify({"success": False, "error": "Failed to send email. Check SMTP settings."}), 500
+
 
 @app.route('/verify-otp', methods=['POST'])
 def verify_otp():
     data = request.json
     email = data.get('email')
     otp = data.get('otp')
-    
+
     if not email or not otp:
-        return jsonify({"success": False, "error": "Email și OTP sunt obligatorii"}), 400
-        
+        return jsonify({"success": False, "error": "Email and OTP are required"}), 400
+
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT otp_code, otp_expiry FROM users WHERE email = %s", (email,))
-    user = cursor.fetchone()
+    cursor.execute(
+        "SELECT otp, expires_at FROM password_resets WHERE email = %s ORDER BY created_at DESC LIMIT 1",
+        (email,)
+    )
+    record = cursor.fetchone()
     cursor.close()
     conn.close()
-    
-    if not user or user.get('otp_code') != otp:
-        return jsonify({"success": False, "error": "Cod OTP invalid"}), 400
-        
-    if user.get('otp_expiry') < datetime.datetime.now():
-        return jsonify({"success": False, "error": "Cod OTP expirat"}), 400
-        
+
+    if not record or record['otp'] != otp:
+        return jsonify({"success": False, "error": "Invalid or expired code"}), 400
+
+    if record['expires_at'] < datetime.datetime.now():
+        return jsonify({"success": False, "error": "Invalid or expired code"}), 400
+
     return jsonify({"success": True, "message": "OTP valid"}), 200
+
 
 @app.route('/reset-password', methods=['POST'])
 def reset_password():
@@ -274,38 +337,104 @@ def reset_password():
     email = data.get('email')
     otp = data.get('otp')
     new_password = data.get('new_password')
-    
+
     if not all([email, otp, new_password]):
-        return jsonify({"success": False, "error": "Toate câmpurile sunt obligatorii"}), 400
-        
+        return jsonify({"success": False, "error": "All fields are required"}), 400
+
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT otp_code, otp_expiry FROM users WHERE email = %s", (email,))
-    user = cursor.fetchone()
-    
-    if not user or user.get('otp_code') != otp:
-        cursor.close()
-        conn.close()
-        return jsonify({"success": False, "error": "Cod OTP invalid"}), 400
-        
-    if user.get('otp_expiry') < datetime.datetime.now():
-        cursor.close()
-        conn.close()
-        return jsonify({"success": False, "error": "Cod OTP expirat"}), 400
-        
-    # Criptăm noua parolă
-    hashed_password = generate_password_hash(new_password)
-    
-    # Resetăm parola și ștergem OTP-ul pentru a invalida refolosirea lui
+
+    # Re-verificăm OTP-ul pentru securitate
     cursor.execute(
-        "UPDATE users SET password = %s, otp_code = NULL, otp_expiry = NULL WHERE email = %s", 
-        (hashed_password, email)
+        "SELECT otp, expires_at FROM password_resets WHERE email = %s ORDER BY created_at DESC LIMIT 1",
+        (email,)
     )
+    record = cursor.fetchone()
+
+    if not record or record['otp'] != otp:
+        cursor.close()
+        conn.close()
+        return jsonify({"success": False, "error": "Invalid or expired code"}), 400
+
+    if record['expires_at'] < datetime.datetime.now():
+        cursor.close()
+        conn.close()
+        return jsonify({"success": False, "error": "Invalid or expired code"}), 400
+
+    # Hash-uim noua parolă și actualizăm în users
+    hashed_password = generate_password_hash(new_password)
+    cursor.execute("UPDATE users SET password = %s WHERE email = %s", (hashed_password, email))
+
+    # Ștergem TOATE OTP-urile pentru acest email (invalidare completă)
+    cursor.execute("DELETE FROM password_resets WHERE email = %s", (email,))
+
     conn.commit()
     cursor.close()
     conn.close()
+
+    return jsonify({"success": True, "message": "Password reset successfully"}), 200
+
+
+@app.route('/api/users/me', methods=['DELETE'])
+def delete_account():
+    print(f"🔥 [DELETE ACCOUNT] Request received from {request.remote_addr}", flush=True)
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        print("❌ [DELETE ACCOUNT] Token missing or invalid format.", flush=True)
+        return jsonify({'error': 'Unauthorized', 'message': 'Token lipsă sau invalid'}), 401
+        
+    token = auth_header.split(' ')[1]
+    jwt_secret = os.getenv('JWT_SECRET_KEY')
     
-    return jsonify({"success": True, "message": "Parola a fost schimbată cu succes"}), 200
+    try:
+        payload = jwt.decode(token, jwt_secret, algorithms=['HS256'])
+        user_id = payload.get('user_id')
+        email = payload.get('email')
+        print(f"✅ [DELETE ACCOUNT] Decoded token for user_id: {user_id}, email: {email}", flush=True)
+        
+        if not user_id:
+            return jsonify({'error': 'Unauthorized', 'message': 'Token invalid'}), 401
+            
+    except jwt.ExpiredSignatureError:
+        print("❌ [DELETE ACCOUNT] Token expired.", flush=True)
+        return jsonify({'error': 'Unauthorized', 'message': 'Token expirat'}), 401
+    except jwt.InvalidTokenError as e:
+        print(f"❌ [DELETE ACCOUNT] Invalid token error: {e}", flush=True)
+        return jsonify({'error': 'Unauthorized', 'message': 'Token invalid'}), 401
+        
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # ── Cascading manual: ștergem datele dependente ──
+        # 1. Istoric scanări
+        cursor.execute("DELETE FROM recognition_history WHERE user_id = %s", (user_id,))
+        print(f"ℹ️ [DELETE ACCOUNT] Deleted {cursor.rowcount} records from recognition_history.", flush=True)
+        
+        # 2. Toate cererile de resetare a parolei
+        if email:
+            cursor.execute("DELETE FROM password_resets WHERE email = %s", (email,))
+            print(f"ℹ️ [DELETE ACCOUNT] Deleted {cursor.rowcount} records from password_resets.", flush=True)
+            
+        # 3. Stergere user
+        cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        print(f"ℹ️ [DELETE ACCOUNT] Deleted {cursor.rowcount} records from users table.", flush=True)
+        
+        # Salvăm modificările
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        if cursor.rowcount == 0:
+            print("⚠️ [DELETE ACCOUNT] No user found with that ID in the database!", flush=True)
+            return jsonify({'success': False, 'message': 'User not found in the database (already deleted?)'}), 404
+            
+        print("✅ [DELETE ACCOUNT] User successfully deleted from database.", flush=True)
+        return jsonify({'success': True, 'message': 'User deleted successfully'}), 200
+        
+    except Exception as err:
+        print(f"❌ [ERROR in delete_account]: {err}", flush=True)
+        return jsonify({'error': 'Server Error', 'message': str(err)}), 500
 
 if __name__ == '__main__':
     # Ascultăm pe '0.0.0.0' pentru a fi accesibili din rețeaua locală

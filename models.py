@@ -19,3 +19,21 @@ def create_recognition_history_table():
     conn.commit()
     cursor.close()
     conn.close()
+
+
+def create_password_resets_table():
+    """Creates the password_resets table if it doesn't exist."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS password_resets (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            email VARCHAR(255) NOT NULL,
+            otp VARCHAR(6) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at DATETIME NOT NULL
+        )
+    """)
+    conn.commit()
+    cursor.close()
+    conn.close()
