@@ -1,3 +1,7 @@
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf8')
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -6,6 +10,7 @@ from dotenv import load_dotenv
 from database import get_db_connection  # Folosim funcția ta de conexiune
 from models import create_recognition_history_table, create_password_resets_table
 from routes.recognize import recognize_bp
+from routes.chords import chords_bp
 
 load_dotenv()
 import os
@@ -22,11 +27,12 @@ CORS(app)
 
 # Register blueprints
 app.register_blueprint(recognize_bp)
+app.register_blueprint(chords_bp)
 
 # --- DEBUGGING: Interceptăm ORICE cerere care ajunge la server ---
 @app.before_request
 def log_request_info():
-    print(f"📡 [TRAFIC INTERCEPTAT] Metodă: {request.method} | Către: {request.url} | IP Sursă: {request.remote_addr}", flush=True)
+    print(f"[TRAFIC INTERCEPTAT] Metoda: {request.method} | Catre: {request.url} | IP Sursa: {request.remote_addr}", flush=True)
 # -----------------------------------------------------------------
 
 # Create tables at startup
@@ -141,7 +147,7 @@ def signin():
 # 🔹 Google Sign-In
 @app.route('/api/auth/google', methods=['POST'])
 def google_signin():
-    print("🔥 [BACKEND] Se primește cerere POST la /api/auth/google pentru login Google...", flush=True)
+    print("[BACKEND] Se primeste cerere POST la /api/auth/google pentru login Google...", flush=True)
 
     data = request.json
     token = data.get('idToken') or data.get('id_token')
@@ -224,11 +230,11 @@ def google_signin():
         }), 200
 
     except ValueError as e:
-        print(f"❌ [BACKEND] Eroare validare token Google (ValueError): {e}", flush=True)
+        print(f"[BACKEND] Eroare validare token Google (ValueError): {e}", flush=True)
         return jsonify({'error': f'Token de la Google invalid: {e}'}), 401
     except Exception as err:
         import traceback
-        print(f"❌ [BACKEND] EROARE GRAVĂ INTERNĂ la Google Login: {err}", flush=True)
+        print(f"[BACKEND] EROARE GRAVA INTERNA la Google Login: {err}", flush=True)
         traceback.print_exc()  # Asta va printa exact linia de cod unde a crăpat
         return jsonify({'error': f'Eroare internă de server: {str(err)}'}), 500
 
@@ -435,6 +441,76 @@ def delete_account():
     except Exception as err:
         print(f"❌ [ERROR in delete_account]: {err}", flush=True)
         return jsonify({'error': 'Server Error', 'message': str(err)}), 500
+
+# ---------------------------------------------------------
+# 🔹 Chord Search (Ultimate Guitar Scraping)
+# ---------------------------------------------------------
+from services.chord_service import search_chords, get_chord_content, search_and_get_first
+
+@app.route('/api/chords/search', methods=['POST'])
+def chord_search():
+    """
+    Caută acorduri pe Ultimate Guitar.
+    Body JSON: {"query": "titlu sau versuri"}
+    Returnează primul rezultat cu acordurile complete.
+    """
+    data = request.json
+    query = data.get('query', '').strip() if data else ''
+
+    if not query:
+        return jsonify({'error': 'Query is required'}), 400
+
+    print(f"🎸 [CHORDS ENDPOINT] Căutare acorduri pentru: '{query}'", flush=True)
+
+    result = search_and_get_first(query)
+
+    if not result:
+        return jsonify({
+            'error': 'not_found',
+            'message': 'Nu s-au găsit acorduri pentru această căutare.'
+        }), 404
+
+    return jsonify(result), 200
+
+
+@app.route('/api/chords/results', methods=['POST'])
+def chord_results():
+    """
+    Returnează lista de rezultate (fără conținutul acordurilor).
+    Body JSON: {"query": "titlu sau versuri"}
+    """
+    data = request.json
+    query = data.get('query', '').strip() if data else ''
+
+    if not query:
+        return jsonify({'error': 'Query is required'}), 400
+
+    results = search_chords(query)
+    return jsonify({'results': results}), 200
+
+
+@app.route('/api/chords/tab', methods=['POST'])
+def chord_tab():
+    """
+    Extrage acordurile de la un URL specific de tab.
+    Body JSON: {"url": "https://tabs.ultimate-guitar.com/..."}
+    """
+    data = request.json
+    url = data.get('url', '').strip() if data else ''
+
+    if not url:
+        return jsonify({'error': 'URL is required'}), 400
+
+    result = get_chord_content(url)
+
+    if not result:
+        return jsonify({
+            'error': 'extraction_failed',
+            'message': 'Nu s-au putut extrage acordurile de la acest URL.'
+        }), 404
+
+    return jsonify(result), 200
+
 
 if __name__ == '__main__':
     # Ascultăm pe '0.0.0.0' pentru a fi accesibili din rețeaua locală
