@@ -5,6 +5,7 @@ mysql-connector-python
 requests
 google-auth==2.49.1
 google-auth-httplib2==0.3.0
+google-api-python-client==2.169.0
 PyJWT==2.12.1
 werkzeug
 SpeechRecognition

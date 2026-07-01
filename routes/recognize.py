@@ -1,10 +1,12 @@
 import os
+import shutil
 import tempfile
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
 from database import get_db_connection
 from services.acrcloud_service import recognize_song
 from services.whisper_service import transcribe_audio, search_by_lyrics
+from routes.recordings import normalize_audio
 
 
 recognize_bp = Blueprint("recognize", __name__)
@@ -100,10 +102,61 @@ def recognize():
                 print("[API] 🟢 Piesa gasita via Lyrics Tracker!")
             except Exception as e_lyrics:
                 print(f"[API] 🔴 Piesa nu a fost gasita nici dupa versuri: {str(e_lyrics)}")
+                
+                # CASE B: Save unidentified recording locally + attempt Drive upload
+                try:
+                    conn_unid = get_db_connection()
+                    cursor_unid = conn_unid.cursor()
+
+                    # Creăm intrarea în istoric pentru a o afișa în UI
+                    cursor_unid.execute(
+                        """
+                        INSERT INTO recognition_history
+                            (user_id, custom_name, status, artist, title, album, google_drive_link)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (user_id, "Înregistrare Nereușită", "not_found", "Necunoscut", "Piesă neidentificată", None, None)
+                    )
+                    conn_unid.commit()
+                    history_id_unid = cursor_unid.lastrowid
+
+                    # Salvăm fișierul LOCAL (ca să poată fi redat chiar dacă Drive-ul nu merge)
+                    target_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "temp_recordings")
+                    os.makedirs(target_dir, exist_ok=True)
+                    target_path_unid = os.path.join(target_dir, f"{history_id_unid}{ext}")
+                    shutil.copy2(temp_path, target_path_unid)
+                    normalize_audio(target_path_unid)
+                    print(f"[API] ✅ Fișier audio salvat local: {target_path_unid}")
+
+                    # Creăm intrarea în audio_recordings (inițial fără drive_file_id)
+                    cursor_unid.execute(
+                        "INSERT INTO audio_recordings (history_id, user_id, drive_file_id, status, audio_extension) VALUES (%s, %s, %s, 'unidentified', %s)",
+                        (history_id_unid, user_id, None, ext)
+                    )
+                    conn_unid.commit()
+
+                    # Încercăm upload pe Drive (opțional — dacă reușește, actualizăm drive_file_id)
+                    try:
+                        from services.google_drive_service import upload_to_drive
+                        file_name_for_drive = f"Unidentified_Entry_{history_id_unid}{ext}"
+                        file_id, _ = upload_to_drive(temp_path, file_name_for_drive)
+                        if file_id:
+                            cursor_unid.execute(
+                                "UPDATE audio_recordings SET drive_file_id = %s WHERE history_id = %s",
+                                (file_id, history_id_unid)
+                            )
+                            conn_unid.commit()
+                    except Exception as e_drive:
+                        print(f"[API] ⚠️ Drive upload failed (audio is safe locally): {e_drive}")
+
+                    cursor_unid.close()
+                    conn_unid.close()
+                except Exception as e_upload:
+                    print(f"[API] Failed to auto-save unidentified audio: {e_upload}")
+
                 # Returnam JSON cu status: "not_found" (404) pentru Flutter
                 return jsonify({"status": "not_found", "error": "Piesa nu a fost gasita"}), 404
 
-        # ── Salvare in istoric (doar daca s-a gasit piesa) ────────────
         conn   = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
@@ -122,8 +175,21 @@ def recognize():
         )
         conn.commit()
         history_id = cursor.lastrowid
+
+        # CASE A: Save pending recording and copy file
+        cursor.execute(
+            "INSERT INTO audio_recordings (history_id, user_id, status, audio_extension) VALUES (%s, %s, 'pending', %s)",
+            (history_id, user_id, ext)
+        )
+        conn.commit()
         cursor.close()
         conn.close()
+
+        target_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "temp_recordings")
+        os.makedirs(target_dir, exist_ok=True)
+        target_path = os.path.join(target_dir, f"{history_id}{ext}")
+        shutil.copy2(temp_path, target_path)
+        normalize_audio(target_path)
 
         # ── Returnare raspuns ─────────────────────────────────────────
         response = _build_response(song_data, history_id)
