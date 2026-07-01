@@ -217,4 +217,7 @@ def search_and_get_first(query: str) -> dict | None:
     if not best.get("url"):
         return None
 
-    return get_chord_content(best["url"])
+    result = get_chord_content(best["url"])
+    if result:
+        result["url"] = best["url"]
+    return result

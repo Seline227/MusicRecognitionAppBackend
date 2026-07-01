@@ -8,9 +8,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import uuid
 from dotenv import load_dotenv
 from database import get_db_connection  # Folosim funcția ta de conexiune
-from models import create_recognition_history_table, create_password_resets_table
+from models import create_users_table, create_recognition_history_table, create_password_resets_table, create_audio_recordings_table, create_chords_cache_table
 from routes.recognize import recognize_bp
 from routes.chords import chords_bp
+from routes.history import history_bp
+from routes.recordings import recordings_bp
 
 load_dotenv()
 import os
@@ -28,6 +30,8 @@ CORS(app)
 # Register blueprints
 app.register_blueprint(recognize_bp)
 app.register_blueprint(chords_bp)
+app.register_blueprint(history_bp)
+app.register_blueprint(recordings_bp)
 
 # --- DEBUGGING: Interceptăm ORICE cerere care ajunge la server ---
 @app.before_request
@@ -36,8 +40,11 @@ def log_request_info():
 # -----------------------------------------------------------------
 
 # Create tables at startup
+create_users_table()
 create_recognition_history_table()
 create_password_resets_table()
+create_audio_recordings_table()
+create_chords_cache_table()
 
 # 🔹 Signup
 @app.route('/signup', methods=['POST'])
@@ -450,7 +457,7 @@ from services.chord_service import search_chords, get_chord_content, search_and_
 @app.route('/api/chords/search', methods=['POST'])
 def chord_search():
     """
-    Caută acorduri pe Ultimate Guitar.
+    Caută acorduri pe Ultimate Guitar sau în Cache local.
     Body JSON: {"query": "titlu sau versuri"}
     Returnează primul rezultat cu acordurile complete.
     """
@@ -462,6 +469,23 @@ def chord_search():
 
     print(f"🎸 [CHORDS ENDPOINT] Căutare acorduri pentru: '{query}'", flush=True)
 
+    # 1. VERIFICARE CACHE ÎN BAZA DE DATE
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT song_title as title, artist, chords_text, url FROM chords_cache WHERE query_text = %s", (query,))
+        cached_result = cursor.fetchone()
+        
+        if cached_result:
+            print(f"✅ [CACHE] Hit pentru query: '{query}'", flush=True)
+            cursor.close()
+            conn.close()
+            return jsonify(cached_result), 200
+            
+    except Exception as e:
+        print(f"❌ [CACHE] Eroare la citire: {e}", flush=True)
+
+    # 2. DACĂ NU ESTE ÎN CACHE, APELĂM SCRAPER-UL
     result = search_and_get_first(query)
 
     if not result:
@@ -469,6 +493,23 @@ def chord_search():
             'error': 'not_found',
             'message': 'Nu s-au găsit acorduri pentru această căutare.'
         }), 404
+
+    # 3. SALVĂM REZULTATUL ÎN CACHE PENTRU VIITOR
+    try:
+        url_to_save = result.get("url", "https://www.ultimate-guitar.com")
+        cursor.execute("""
+            INSERT INTO chords_cache (query_text, song_title, artist, chords_text, url)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (query, result["title"], result["artist"], result["chords_text"], url_to_save))
+        conn.commit()
+        print(f"✅ [CACHE] Salvat pentru query: '{query}'", flush=True)
+    except Exception as e:
+        print(f"❌ [CACHE] Eroare la salvare: {e}", flush=True)
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+        if 'conn' in locals() and conn:
+            conn.close()
 
     return jsonify(result), 200
 
