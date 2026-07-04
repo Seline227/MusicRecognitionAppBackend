@@ -1,10 +1,11 @@
 from database import get_db_connection
 
-
 def create_users_table():
-    """Creates the users table if it doesn't exist."""
+
     conn = get_db_connection()
+
     cursor = conn.cursor()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id VARCHAR(36) NOT NULL,
@@ -21,15 +22,19 @@ def create_users_table():
             UNIQUE KEY uq_user_google_id (google_id)
         ) ENGINE=InnoDB;
     """)
+
     conn.commit()
+
     cursor.close()
+
     conn.close()
 
-
 def create_recognition_history_table():
-    """Creates the recognition_history table if it doesn't exist."""
+
     conn = get_db_connection()
+
     cursor = conn.cursor()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS recognition_history (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -41,31 +46,41 @@ def create_recognition_history_table():
             album VARCHAR(255),
             google_drive_link TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            CONSTRAINT fk_history_users 
-                FOREIGN KEY (user_id) 
-                REFERENCES users (id) 
+            CONSTRAINT fk_history_users
+                FOREIGN KEY (user_id)
+                REFERENCES users (id)
                 ON DELETE CASCADE
         ) ENGINE=InnoDB;
     """)
-    # Încercăm să adăugăm noile coloane dacă tabelul exista deja, ignorând eroarea dacă ele există
+
     try:
+
         cursor.execute("ALTER TABLE recognition_history ADD COLUMN custom_name VARCHAR(255) NOT NULL DEFAULT 'Înregistrare'")
+
     except Exception:
+
         pass
+
     try:
+
         cursor.execute("ALTER TABLE recognition_history ADD COLUMN status VARCHAR(50)")
+
     except Exception:
+
         pass
-        
+
     conn.commit()
+
     cursor.close()
+
     conn.close()
 
-
 def create_password_resets_table():
-    """Creates the password_resets table if it doesn't exist."""
+
     conn = get_db_connection()
+
     cursor = conn.cursor()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS password_resets (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -75,15 +90,19 @@ def create_password_resets_table():
             expires_at DATETIME NOT NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """)
+
     conn.commit()
+
     cursor.close()
+
     conn.close()
 
-
 def create_audio_recordings_table():
-    """Creates the audio_recordings table if it doesn't exist."""
+
     conn = get_db_connection()
+
     cursor = conn.cursor()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS audio_recordings (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -94,25 +113,29 @@ def create_audio_recordings_table():
             status VARCHAR(50) DEFAULT 'pending',
             audio_extension VARCHAR(10) NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            CONSTRAINT fk_recordings_history 
-                FOREIGN KEY (history_id) 
-                REFERENCES recognition_history (id) 
+            CONSTRAINT fk_recordings_history
+                FOREIGN KEY (history_id)
+                REFERENCES recognition_history (id)
                 ON DELETE CASCADE,
-            CONSTRAINT fk_recordings_users 
-                FOREIGN KEY (user_id) 
-                REFERENCES users (id) 
+            CONSTRAINT fk_recordings_users
+                FOREIGN KEY (user_id)
+                REFERENCES users (id)
                 ON DELETE SET NULL
         ) ENGINE=InnoDB;
     """)
+
     conn.commit()
+
     cursor.close()
+
     conn.close()
 
-
 def create_chords_cache_table():
-    """Creates the chords_cache table if it doesn't exist."""
+
     conn = get_db_connection()
+
     cursor = conn.cursor()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS chords_cache (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -125,6 +148,9 @@ def create_chords_cache_table():
             UNIQUE KEY uq_cache_query (query_text)
         ) ENGINE=InnoDB;
     """)
+
     conn.commit()
+
     cursor.close()
+
     conn.close()
